@@ -1,6 +1,8 @@
 /*
  * ble_uart.h
  *
+ * Optional UART helpers; these are not called by the current main loop.
+ *
  *  Created on: 8 Jan 2026
  *      Author: Lane
  */
@@ -18,34 +20,48 @@ extern "C" {
 #include <stddef.h>
 
 /**
- * @brief 初始化 BLE UART 模块
- * @param ble_huart   BLE 所在 UART（建议 USART1 -> &huart1）
- * @param dbg_huart   调试输出 UART（Putty，建议 USART2 -> &huart2），不需要可传 NULL
+ * @brief Bind already-initialized UART handles to the BLE helpers.
+ * @param ble_huart BLE module UART, typically USART1 (&huart1).
+ * @param dbg_huart Optional debug UART, typically USART2 (&huart2); NULL disables it.
+ * @note This stores the handles; it does not configure the UARTs or BLE module.
  */
 void BLE_UART_Init(UART_HandleTypeDef *ble_huart, UART_HandleTypeDef *dbg_huart);
 
 /**
- * @brief 开始 1-byte 中断接收（用于调试或命令）
+ * @brief Start receiving one byte using a UART interrupt.
+ * @note Call after BLE_UART_Init(). Enable the UART interrupt and forward the
+ * HAL receive-complete callback to BLE_UART_OnRxCplt() to keep reception running.
  */
 void BLE_UART_StartRxIT(void);
 
 /**
- * @brief 发送原始字节（blocking）
+ * @brief Send raw bytes using a blocking HAL UART transfer.
+ * @param data Buffer containing the bytes to send.
+ * @param len Number of bytes, passed to HAL as a uint16_t.
+ * @param timeout_ms HAL transmit timeout in milliseconds.
+ * @return HAL transmit status, or HAL_ERROR if no BLE UART handle is bound.
  */
 HAL_StatusTypeDef BLE_UART_Send(const uint8_t *data, size_t len, uint32_t timeout_ms);
 
 /**
- * @brief 发送字符串（blocking）
+ * @brief Send a null-terminated string using a blocking transfer.
+ * @note The terminating null byte is not transmitted.
  */
 HAL_StatusTypeDef BLE_UART_SendString(const char *s, uint32_t timeout_ms);
 
 /**
- * @brief 可选：把温度打包成 4 个十进制字符（例如 38.27 -> "3827"）并发送
+ * @brief Scale a temperature by 100 and send four decimal characters.
+ * For example, 38.27 C is transmitted as "3827" without a decimal point.
+ * @note Intended for non-negative values that round into 0000..9999.
+ * No range validation is performed; the current main loop uses another format.
  */
 HAL_StatusTypeDef BLE_UART_SendTemp_x100(float temp_c, uint32_t timeout_ms);
 
 /**
- * @brief 必须从全局 HAL_UART_RxCpltCallback() 里转发进来
+ * @brief Handle a completed one-byte receive operation and rearm reception.
+ * @param huart UART handle supplied by HAL_UART_RxCpltCallback().
+ * @note The application must forward that callback here. Bytes may be echoed
+ * to the optional debug UART; this helper does not parse commands.
  */
 void BLE_UART_OnRxCplt(UART_HandleTypeDef *huart);
 
@@ -53,4 +69,4 @@ void BLE_UART_OnRxCplt(UART_HandleTypeDef *huart);
 }
 #endif
 
-#endif // BLE_UART_Hs
+#endif // INC_BLE_UART_H_

@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : Event-triggered infrared temperature measurement.
   ******************************************************************************
   * @attention
   *
@@ -14,7 +14,9 @@
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
-  * Temp measument + ble advertising powered by transistor circuit at run mode
+  * Falling-edge wake starts a temperature-measurement window.
+  * PA4 controls the external peripheral supply; USART2 carries debug logs
+  * and USART1 carries temperature text for an external BLE module.
   *
   ******************************************************************************
   */
@@ -35,10 +37,11 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+// State labels retained from the disabled legacy state machine below.
 typedef enum {
-    MODE_ARMED = 0,     // 等待上升沿唤醒
-    MODE_ACTIVE,        // 工作窗口 30s
-    MODE_WAIT_FALL      // 等待下降沿“释放”，再重新武装
+    MODE_ARMED = 0,     // Legacy state: wait for a rising-edge trigger.
+    MODE_ACTIVE,        // Legacy active state; the current measurement loop uses 10 s.
+    MODE_WAIT_FALL      // Legacy state: wait for a falling edge before rearming.
 } app_mode_t;
 
 /* USER CODE END PTD */
@@ -47,8 +50,8 @@ typedef enum {
 /* USER CODE BEGIN PD */
 
 volatile app_mode_t g_mode = MODE_ARMED;
-volatile uint8_t g_exti_event = 0;   // 1 表示收到 EXTI 事件
-volatile uint16_t g_exti_pin = 0;    // 记录触发的 pin（可选）
+volatile uint8_t g_exti_event = 0;   // Set by the EXTI callback when an interrupt occurs.
+volatile uint16_t g_exti_pin = 0;    // Last triggering GPIO pin mask, retained for diagnostics.
 
 /* USER CODE END PD */
 
@@ -76,7 +79,7 @@ static void BLE_UartPins_HiZ(void);
 /* USER CODE BEGIN 0 */
 
 /**
- * @brief Redirect printf() output to USART2 (Putty).
+ * @brief Redirect printf() output to the USART2 debug terminal.
  *
  * This allows using printf(...) for debug logs without additional wrapper
  * functions. The BLE string is sent separately using HAL_UART_Transmit on huart1.
@@ -123,7 +126,7 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  // 初始：等待上升沿唤醒
+  // Select falling-edge wake; g_mode is retained for the legacy state machine.
   g_mode = MODE_ARMED;
   EXTI_SetEdge_Falling(WAKE_Pin);
   /* USER CODE END 2 */
@@ -136,12 +139,13 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+// Disabled legacy control flow. The active loop below uses falling-edge wake.
 //	if (g_mode == MODE_ARMED)
 //	{
-//	  // 进入 STOP，等待 RISING 唤醒
+//	  // Enter STOP and wait for a rising-edge interrupt.
 //	  EnterStop();
 //
-//	  // 唤醒后，如果是 EXTI 事件，则进入 ACTIVE
+//	  // After an EXTI wake event, enter the legacy active state.
 //	  if (g_exti_event) {
 //		  g_exti_event = 0;
 //		  g_mode = MODE_ACTIVE;
@@ -150,38 +154,38 @@ int main(void)
 //
 //	else if (g_mode == MODE_ACTIVE)
 //	{
-//	  // 工作窗口 30s
+//	  // Run the measurement helper; its current timeout is 10 s.
 //	  ActiveWindow_30s();
 //
-//	  // 30s 后不立刻武装 RISING，而是先等 FALLING（释放）
+//	  // After measurement, wait for the falling-edge release before rearming.
 //	  g_mode = MODE_WAIT_FALL;
 //	  EXTI_SetEdge_Falling(WAKE_Pin);
 //	}
 //
 //	else if (g_mode == MODE_WAIT_FALL)
 //	{
-//	  // 进入 STOP，等待 FALLING
+//	  // Enter STOP and wait for a falling-edge interrupt.
 //	  EnterStop();
 //
 //	  if (g_exti_event) {
 //		  g_exti_event = 0;
 //
-//		  // 收到 FALLING：说明外部信号回到低电平了
-//		  // 重新武装 RISING，回到 ARMED
+//		  // A falling edge indicates that the external signal returned low.
+//		  // Rearm the rising edge and return to the legacy armed state.
 //		  EXTI_SetEdge_Rising(WAKE_Pin);
 //		  g_mode = MODE_ARMED;
 //	  }
 //	}
 
-	  EnterStop();   // 等 falling 唤醒
+	  EnterStop();   // Enter STOP and wait for a falling-edge wake event.
 
 	  if (g_exti_event) {
 		  g_exti_event = 0;
 
-		  // 再确认一次当前电平确实为低，防止毛刺误触发
+		  // Accept the wake event only if PA0 is still low.
 		  if (HAL_GPIO_ReadPin(WAKE_GPIO_Port, WAKE_Pin) == GPIO_PIN_RESET)
 		  {
-			  // 可选：简单消抖
+			  // Debounce: wait 10 ms, then confirm that PA0 remains low.
 			  HAL_Delay(10);
 			  if (HAL_GPIO_ReadPin(WAKE_GPIO_Port, WAKE_Pin) == GPIO_PIN_RESET)
 			  {
@@ -195,7 +199,7 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
+  * @brief Select the 16 MHz HSI clock for the CPU and configured peripherals.
   * @retval None
   */
 void SystemClock_Config(void)
@@ -245,29 +249,38 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+ * @brief Record an EXTI event for processing in the main loop.
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    // 只记录事件，避免在中断里printf / I2C / UART
+    // Keep this callback short; sensor reads and UART output run in the main loop.
     g_exti_event = 1;
     g_exti_pin = GPIO_Pin;
 }
 
+/**
+ * @brief Select rising-edge EXTI for one GPIO pin (legacy helper).
+ */
 static void EXTI_SetEdge_Rising(uint16_t pin)
 {
     uint32_t line = 0;
-    // pin 是 GPIO_PIN_0..GPIO_PIN_15 这种位掩码
+    // Convert the single GPIO_PIN_x bit mask to its EXTI line index.
     for (int i = 0; i < 16; i++) {
         if (pin == (1U << i)) { line = i; break; }
     }
 
-    // 关掉 falling，打开 rising
+    // Disable falling-edge detection and enable rising-edge detection.
     EXTI->FTSR &= ~(1U << line);
     EXTI->RTSR |=  (1U << line);
 
-    // 清 pending
+    // Clear a pending interrupt by writing one to its bit.
     EXTI->PR = (1U << line);
 }
 
+/**
+ * @brief Select falling-edge EXTI for the active wake input.
+ */
 static void EXTI_SetEdge_Falling(uint16_t pin)
 {
     uint32_t line = 0;
@@ -275,63 +288,75 @@ static void EXTI_SetEdge_Falling(uint16_t pin)
         if (pin == (1U << i)) { line = i; break; }
     }
 
+    // Disable rising-edge detection and enable falling-edge detection.
     EXTI->RTSR &= ~(1U << line);
     EXTI->FTSR |=  (1U << line);
 
+    // Clear a pending interrupt by writing one to its bit.
     EXTI->PR = (1U << line);
 }
 
+/**
+ * @brief Switch off the peripheral supply and wait in low-power STOP mode.
+ * Execution continues after an interrupt; the clock is then restored.
+ */
 static void EnterStop(void)
 {
 	PowerSwitch_ForceLow();
 
-    // 关键：避免通过USART1脚给BLE反向供电
+    // Release the UART pins to reduce back-powering of the unpowered BLE module.
     BLE_UartPins_HiZ();
 
-    // 可选：避免 SysTick 在 STOP 前后乱触发
+    // Suspend periodic tick interrupts around STOP entry and wake-up.
     HAL_SuspendTick();
 
-    // 清 EXTI 标志
+    // Clear the software event flag before arming the next sleep.
     g_exti_event = 0;
 
-    /* 4) 清 EXTI pending：关键！防止旧的pending导致“秒醒” */
+    /* Clear a stale EXTI pending bit that could cause an immediate wake-up. */
     __HAL_GPIO_EXTI_CLEAR_IT(WAKE_Pin);
 
-    /* 5) 清 PWR Wakeup flag（有些情况下也会导致立刻返回） */
+    /* Clear the power wake-up flag before entering STOP. */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 
-    /* 6) Data Synchronization Barrier：确保上面的寄存器写入生效后再睡 */
+    /* Complete register writes and synchronize execution before sleeping. */
     __DSB();
     __ISB();
 
-    // 进入 STOP，WFI 等中断唤醒
+    // Enter STOP with the low-power regulator and wait for an interrupt.
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
-    // 唤醒后继续执行到这里
+    // Execution resumes here after wake-up.
     HAL_ResumeTick();
 
-    // STOP 唤醒后，必须恢复系统时钟
+    // Restore the configured system clock after STOP.
     SystemClock_Config();
 
-    // 唤醒后如果你还要用USART1，需要重新Init或至少重新使能并恢复AF模式
-    // 最稳妥做法：MX_USART1_UART_Init(); 以及把PA9/PA10恢复AF
+    // Reinitialize USART1. GPIO restoration still needs review: HAL_UART_Init()
+    // only reruns MSP pin setup when the UART handle is in the RESET state.
     MX_USART1_UART_Init();
 }
 
+/**
+ * @brief Power the peripherals, read temperatures, and submit UART telemetry.
+ * @note The legacy name says 30 s; the loop currently uses a 10000 ms timeout.
+ * The settling delay and sensor readiness check occur before that timeout.
+ */
 static void ActiveWindow_30s(void)
 {
-    // 上电下游
+    // Enable the external sensor/BLE supply and allow 200 ms to settle.
     HAL_GPIO_WritePin(GPIOA, POWERSWITCH_Pin, GPIO_PIN_SET);
     HAL_Delay(200);
 
     printf("MLX90614 bring-up\r\n");
     if (MLX90614_Init(&hi2c1) != HAL_OK) {
         printf("MLX90614 not ready\r\n");
-        // 这里你可以选择直接退出窗口，或者继续尝试
+        // Continue with timed read attempts even if the readiness probe fails.
     } else {
         printf("MLX90614 ready\r\n");
     }
 
+    // Start the measurement timer after peripheral power-up and initialization.
     uint32_t t0 = HAL_GetTick();
 
     while ((HAL_GetTick() - t0) < 10000U) {
@@ -340,6 +365,7 @@ static void ActiveWindow_30s(void)
         if (MLX90614_ReadTaTo(&Ta, &To) == HAL_OK) {
             printf("Ta=%.2fC  To=%.2fC\r\n", Ta, To);
 
+            // Format both temperatures as an ASCII line for the BLE module UART.
             char buf[64];
             snprintf(buf, sizeof(buf), "Ta=%.2f, To=%.2f\r\n", Ta, To);
             HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), 100);
@@ -347,42 +373,49 @@ static void ActiveWindow_30s(void)
             printf("Read ERR\r\n");
         }
 
+        // Space read attempts by 500 ms; I2C and UART operations add overhead.
         HAL_Delay(500);
     }
 
-    // 关下游
+    // Disable the downstream supply at the end of the measurement window.
     HAL_GPIO_WritePin(GPIOA, POWERSWITCH_Pin, GPIO_PIN_RESET);
 }
 
+/**
+ * @brief Hold the external peripheral power-switch control low before STOP.
+ */
 static void PowerSwitch_ForceLow(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    // 先写0，避免glitch
+    // Set the output latch low before configuring the GPIO to avoid a high pulse.
     HAL_GPIO_WritePin(GPIOA, POWERSWITCH_Pin, GPIO_PIN_RESET);
 
-    // 再强制配置成推挽输出
+    // Keep PA4 actively driven low as a push-pull output.
     GPIO_InitStruct.Pin = POWERSWITCH_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    // 再写一次0，确保生效
+    // Reassert the low level after GPIO initialization.
     HAL_GPIO_WritePin(GPIOA, POWERSWITCH_Pin, GPIO_PIN_RESET);
 }
 
+/**
+ * @brief Disable USART1 and release PA9/PA10 while the BLE supply is off.
+ */
 static void BLE_UartPins_HiZ(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    // 假设 USART1 TX=PA9, RX=PA10（你要按实际改）
+    // This project maps USART1 TX/RX to PA9/PA10.
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    // 先关闭USART1，避免外设继续驱动引脚
+    // Disable USART1 before changing the pins away from their alternate function.
     __HAL_UART_DISABLE(&huart1);
 
-    // 把TX/RX设为模拟输入(最低漏电，且高阻)
+    // Use analog mode with no pulls to release the pins and reduce leakage.
     GPIO_InitStruct.Pin  = GPIO_PIN_9 | GPIO_PIN_10;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;

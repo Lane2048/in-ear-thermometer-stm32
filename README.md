@@ -4,7 +4,7 @@ An event-triggered infrared thermometer prototype developed for an Electronic & 
 
 The application is designed to spend its idle time in **STOP mode**, switch on the peripheral supply when triggered, read ambient and object temperatures, and transmit the readings during a short measurement window.
 
-**Current version:** the original `System_test_ob` bench prototype for **NUCLEO-L053R8**. Application source contents and existing comments are preserved. The UART1 pin-restoration issue described in [firmware notes](docs/firmware.md#known-limitations) needs attention before relying on BLE output after STOP.
+**Current version:** the original `System_test_ob` bench prototype for **NUCLEO-L053R8**. Application logic is preserved; application comments now explain the active flow in English. The UART1 pin-restoration issue described in [firmware notes](docs/firmware.md#known-limitations) needs attention before relying on BLE output after STOP.
 
 ## At a glance
 
